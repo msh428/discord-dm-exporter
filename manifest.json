@@ -21,6 +21,12 @@
       "matches": ["https://discord.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://discord.com/*"],
+      "js": ["injected.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "background": {
