@@ -222,6 +222,42 @@ body {
   letter-spacing: 0;
 }
 
+/* ── 날짜 토글 ────────────────────────── */
+.toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.toggle-wrap input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  accent-color: #5865f2;
+  cursor: pointer;
+}
+
+.toggle-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #80848e;
+  text-transform: none;
+  letter-spacing: 0;
+  transition: color 0.15s;
+}
+
+.toggle-wrap:has(input:checked) .toggle-label { color: #5865f2; }
+
+.date-all-label {
+  font-size: 13px;
+  color: #80848e;
+  padding: 7px 10px;
+  background: #1e1f22;
+  border-radius: 6px;
+  border: 1.5px solid transparent;
+}
+
 /* ── 날짜 범위 ────────────────────────── */
 .date-row {
   display: flex;

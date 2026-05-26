@@ -19,6 +19,9 @@ const sectionProgress = document.getElementById('section-progress');
 const selAvatar       = document.getElementById('sel-avatar');
 const selName         = document.getElementById('sel-name');
 const btnDeselect     = document.getElementById('btn-deselect');
+const dateToggle      = document.getElementById('date-toggle');
+const dateRangeRow    = document.getElementById('date-range-row');
+const dateAllLabel    = document.getElementById('date-all-label');
 const dateFrom        = document.getElementById('date-from');
 const dateTo          = document.getElementById('date-to');
 const exportBtn       = document.getElementById('export-btn');
@@ -36,6 +39,12 @@ dmSearch.addEventListener('input', () => renderDMList(filterChannels(dmSearch.va
 btnDeselect.addEventListener('click', deselectDM);
 exportBtn.addEventListener('click', runExport);
 cancelBtn.addEventListener('click', cancelExport);
+dateToggle.addEventListener('change', () => {
+  const on = dateToggle.checked;
+  dateRangeRow.classList.toggle('hidden', !on);
+  dateAllLabel.classList.toggle('hidden', on);
+  if (!on) { dateFrom.value = ''; dateTo.value = ''; }
+});
 cryptoBtn.addEventListener('click', () => cryptoModal.classList.remove('hidden'));
 modalClose.addEventListener('click', () => cryptoModal.classList.add('hidden'));
 cryptoModal.addEventListener('click', e => { if (e.target === cryptoModal) cryptoModal.classList.add('hidden'); });

@@ -50,12 +50,19 @@
     </div>
 
     <div class="field">
-      <div class="field-label">날짜 범위 <span class="badge">선택</span></div>
-      <div class="date-row">
+      <div class="field-label">
+        날짜 범위
+        <label class="toggle-wrap">
+          <input type="checkbox" id="date-toggle">
+          <span class="toggle-label">범위 지정</span>
+        </label>
+      </div>
+      <div id="date-range-row" class="date-row hidden">
         <input type="date" id="date-from" class="date-input" title="시작일">
         <span class="date-sep">—</span>
         <input type="date" id="date-to" class="date-input" title="종료일">
       </div>
+      <div id="date-all-label" class="date-all-label">전체 기간</div>
     </div>
 
     <div class="field">
