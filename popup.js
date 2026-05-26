@@ -145,14 +145,24 @@ function renderDMList(channels) {
     const item = document.createElement('div');
     item.className = 'dm-item' + (selectedChannel?.id === ch.id ? ' selected' : '');
     item.dataset.channelId = ch.id;
-    item.innerHTML = `
-      <img class="dm-avatar" src="${avatarUrl(u, 36)}"
-           onerror="this.src='${fallbackAvatar(u.id)}'" alt="">
-      <div class="dm-info">
-        <span class="dm-name">${esc(u.username)}</span>
-        ${u.global_name && u.global_name !== u.username
-          ? `<span class="dm-sub">${esc(u.global_name)}</span>` : ''}
-      </div>`;
+
+    const img = makeAvatar(u, 36, 'dm-avatar');
+
+    const info = document.createElement('div');
+    info.className = 'dm-info';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'dm-name';
+    nameEl.textContent = u.username;
+    info.appendChild(nameEl);
+    if (u.global_name && u.global_name !== u.username) {
+      const subEl = document.createElement('span');
+      subEl.className = 'dm-sub';
+      subEl.textContent = u.global_name;
+      info.appendChild(subEl);
+    }
+
+    item.appendChild(img);
+    item.appendChild(info);
     item.addEventListener('click', () => selectDM(ch, u));
     dmListEl.appendChild(item);
   });
@@ -167,6 +177,7 @@ function selectDM(channel, user) {
   selectedChannel = channel;
   selectedUser    = user;
 
+  selAvatar.referrerPolicy = 'no-referrer';
   selAvatar.src = avatarUrl(user, 30);
   selAvatar.onerror = () => { selAvatar.src = fallbackAvatar(user.id); };
   selName.textContent = user.username;
@@ -313,6 +324,16 @@ function avatarUrl(user, size = 40) {
 
 function fallbackAvatar(userId) {
   return `https://cdn.discordapp.com/embed/avatars/${Number(userId) % 5}.png`;
+}
+
+function makeAvatar(user, size, className) {
+  const img = document.createElement('img');
+  img.className = className;
+  img.alt = '';
+  img.referrerPolicy = 'no-referrer';
+  img.src = avatarUrl(user, size);
+  img.addEventListener('error', () => { img.src = fallbackAvatar(user.id); });
+  return img;
 }
 
 function esc(s) {
