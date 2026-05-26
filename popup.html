@@ -22,11 +22,14 @@
 
   <!-- ① DM 목록 섹션 -->
   <div id="section-dm" class="section">
-    <div class="search-box">
-      <svg viewBox="0 0 20 20" width="15" height="15" class="search-icon">
-        <path d="M8.5 3a5.5 5.5 0 1 0 3.17 9.938l3.444 3.445a.75.75 0 1 0 1.06-1.06L12.73 11.88A5.5 5.5 0 0 0 8.5 3zm-4 5.5a4 4 0 1 1 8 0 4 4 0 0 1-8 0z" fill="currentColor"/>
-      </svg>
-      <input id="dm-search" type="text" placeholder="상대방 검색..." autocomplete="off" spellcheck="false">
+    <div class="search-row">
+      <div class="search-box">
+        <svg viewBox="0 0 20 20" width="15" height="15" class="search-icon">
+          <path d="M8.5 3a5.5 5.5 0 1 0 3.17 9.938l3.444 3.445a.75.75 0 1 0 1.06-1.06L12.73 11.88A5.5 5.5 0 0 0 8.5 3zm-4 5.5a4 4 0 1 1 8 0 4 4 0 0 1-8 0z" fill="currentColor"/>
+        </svg>
+        <input id="dm-search" type="text" placeholder="상대방 검색..." autocomplete="off" spellcheck="false">
+      </div>
+      <button id="multiselect-btn" class="btn-chip">다중선택</button>
     </div>
     <div id="dm-list" class="dm-list">
       <div class="dm-placeholder">
@@ -36,17 +39,27 @@
     </div>
   </div>
 
-  <!-- ② 내보내기 설정 섹션 (DM 선택 후 표시) -->
+  <!-- ② 내보내기 설정 섹션 -->
   <div id="section-export" class="section hidden">
 
-    <div class="selected-chip" id="selected-chip">
+    <!-- 단일 선택 칩 -->
+    <div id="selected-chip" class="selected-chip">
       <img id="sel-avatar" class="chip-avatar" src="" alt="">
-      <span id="sel-name" class="chip-name"></span>
+      <div class="chip-info">
+        <span id="sel-name" class="chip-name"></span>
+        <span id="sel-since" class="chip-since"></span>
+      </div>
       <button id="btn-deselect" class="chip-remove" title="다시 선택">
         <svg viewBox="0 0 12 12" width="10" height="10">
           <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
       </button>
+    </div>
+
+    <!-- 다중 선택 카운트 -->
+    <div id="selected-count" class="selected-count hidden">
+      <span id="sel-count-text" class="sel-count-text">0개 선택됨</span>
+      <button id="btn-clear-all" class="btn-text-sm">모두 해제</button>
     </div>
 
     <div class="field">
@@ -97,12 +110,14 @@
 
   <!-- ③ 진행 섹션 -->
   <div id="section-progress" class="section hidden">
+    <div id="batch-status" class="batch-status hidden"></div>
     <div class="progress-wrap">
       <div class="progress-bar-bg">
         <div id="progress-fill" class="progress-fill"></div>
       </div>
       <div class="progress-row">
         <span id="progress-text" class="progress-text">준비 중...</span>
+        <span id="elapsed-time" class="elapsed-time">00:00</span>
         <button id="cancel-btn" class="btn-cancel">취소</button>
       </div>
     </div>
@@ -113,16 +128,16 @@
 
 </div>
 
-<!-- 후원 / 푸터 -->
+<!-- 푸터 -->
 <div class="footer">
   <div class="donate-links">
     <a href="https://ko-fi.com/YOUR_ID" target="_blank" class="donate-link" title="Ko-fi로 후원">☕</a>
     <button id="crypto-btn" class="donate-link donate-btn" title="암호화폐로 후원">₿</button>
   </div>
-  <span class="ver">v1.1.0</span>
+  <span class="ver">v1.2.0</span>
 </div>
 
-<!-- 암호화폐 주소 모달 -->
+<!-- 암호화폐 모달 -->
 <div id="crypto-modal" class="modal hidden">
   <div class="modal-box">
     <div class="modal-title">암호화폐 후원</div>
