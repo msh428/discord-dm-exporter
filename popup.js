@@ -56,24 +56,38 @@ document.querySelectorAll('.copy-btn').forEach(btn => {
 async function init() {
   setStatus('확인 중', 'loading');
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.url?.includes('discord.com')) {
+    // 1순위: 백그라운드가 가로챈 실제 토큰 (가장 신뢰할 수 있음)
+    const stored = await chrome.storage.session.get('discordToken');
+    token = stored.discordToken ?? null;
+
+    // 2순위: content script → injected.js(MAIN world) 경유
+    if (!token) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.url?.includes('discord.com')) {
+        const resp = await chrome.tabs.sendMessage(tab.id, { type: 'GET_TOKEN' }).catch(() => null);
+        token = resp?.token ?? null;
+      }
+    }
+
+    // Discord 탭 여부 확인
+    const [discordTab] = await chrome.tabs.query({ url: 'https://discord.com/*' });
+    if (!discordTab) {
       setStatus('Discord 탭 필요', 'disconnected');
-      showPlaceholder('Discord 웹(discord.com)을 먼저 열어주세요.');
+      showPlaceholder('Discord 웹(discord.com)을 열고 로그인해주세요.');
       return;
     }
-    const resp = await chrome.tabs.sendMessage(tab.id, { type: 'GET_TOKEN' }).catch(() => null);
-    if (!resp?.token) {
-      setStatus('로그인 필요', 'disconnected');
-      showPlaceholder('Discord에 로그인되어 있지 않습니다.');
+
+    if (!token) {
+      setStatus('토큰 대기 중', 'loading');
+      showPlaceholder('Discord에서 아무 채널이나 클릭한 뒤\n팝업을 다시 열어주세요.');
       return;
     }
-    token = resp.token;
+
     setStatus('연결됨', 'connected');
     await loadDMs();
-  } catch {
+  } catch (e) {
     setStatus('오류', 'disconnected');
-    showPlaceholder('오류가 발생했습니다. 팝업을 다시 열어보세요.');
+    showPlaceholder('오류: ' + e.message);
   }
 }
 
