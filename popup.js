@@ -1,16 +1,14 @@
 'use strict';
 
-const API            = 'https://discord.com/api/v9';
-const DISCORD_EPOCH  = 1420070400000n;
+const API           = 'https://discord.com/api/v9';
+const DISCORD_EPOCH = 1420070400000n;
 
 // ── 상태 ─────────────────────────────────────────────────
-let token           = null;
-let allDMChannels   = [];
-let isMultiSelect   = false;
-let selectedMap     = new Map(); // channelId → { channel, user }
-let abortController = null;
-let elapsedTimer    = null;
-let exportStartTime = null;
+let token         = null;
+let allDMChannels = [];
+let isMultiSelect = false;
+let selectedMap   = new Map(); // channelId → { channel, user }
+let pollTimer     = null;
 
 // ── DOM ──────────────────────────────────────────────────
 const statusChip      = document.getElementById('status-chip');
@@ -74,7 +72,6 @@ document.querySelectorAll('.copy-btn').forEach(btn => {
   });
 });
 
-// ── 형식 변경 시 저장 ─────────────────────────────────────
 document.querySelectorAll('.formats input').forEach(cb => {
   cb.addEventListener('change', saveFormats);
 });
@@ -83,7 +80,6 @@ document.querySelectorAll('.formats input').forEach(cb => {
 async function init() {
   setStatus('확인 중', 'loading');
   try {
-    // 저장된 형식 복원
     const prefs = await chrome.storage.local.get(['lastFormats']);
     if (prefs.lastFormats?.length) {
       document.querySelectorAll('.formats input').forEach(cb => {
@@ -91,7 +87,18 @@ async function init() {
       });
     }
 
-    // 1순위: 백그라운드가 가로챈 토큰
+    // 이미 내보내기 진행 중이면 바로 진행 화면 표시
+    const { exportStatus } = await chrome.storage.session.get('exportStatus');
+    if (exportStatus?.status === 'running') {
+      setStatus('연결됨', 'connected');
+      show('progress');
+      progressFill.className = 'progress-fill';
+      batchStatus.classList.add('hidden');
+      startPolling();
+      return;
+    }
+
+    // 토큰 가져오기: 1순위 백그라운드 캐시
     const stored = await chrome.storage.session.get('discordToken');
     token = stored.discordToken ?? null;
 
@@ -143,7 +150,6 @@ async function loadDMs() {
 
     renderDMList(allDMChannels);
 
-    // 마지막으로 선택한 채널 복원
     const prefs = await chrome.storage.local.get(['lastChannelId']);
     if (prefs.lastChannelId) {
       const ch = allDMChannels.find(c => c.id === prefs.lastChannelId);
@@ -181,16 +187,13 @@ function renderDMList(channels) {
     item.className = 'dm-item' + (isSelected ? ' selected' : '');
     item.dataset.channelId = ch.id;
 
-    // 다중선택 체크박스 자리
     const check = document.createElement('div');
     check.className = 'dm-check';
     item.appendChild(check);
 
-    // 아바타
     const img = makeAvatar(ch, 36, 'dm-avatar');
     item.appendChild(img);
 
-    // 정보
     const info = document.createElement('div');
     info.className = 'dm-info';
     const nameEl = document.createElement('span');
@@ -254,9 +257,7 @@ function selectDM(channel, user, saveToStorage = true) {
   selName.textContent = getChannelName(channel);
   selSince.textContent = '대화 시작: ' + snowflakeToDateStr(channel.id);
 
-  if (saveToStorage) {
-    chrome.storage.local.set({ lastChannelId: channel.id });
-  }
+  if (saveToStorage) chrome.storage.local.set({ lastChannelId: channel.id });
   updateSelectionUI();
   clearError();
 }
@@ -273,14 +274,9 @@ function clearSelection() {
 
 function updateSelectionUI() {
   const count = selectedMap.size;
-
-  if (count === 0) {
-    show('dm');
-    return;
-  }
+  if (count === 0) { show('dm'); return; }
 
   show('export');
-
   if (isMultiSelect) {
     selectedChip.style.display = 'none';
     selectedCount.classList.remove('hidden');
@@ -298,106 +294,88 @@ function show(screen) {
   sectionProgress.classList.toggle('hidden', screen !== 'progress');
 }
 
-// ── 내보내기 실행 ─────────────────────────────────────────
-async function runExport() {
+// ── 내보내기 실행 (백그라운드에 위임) ─────────────────────
+function runExport() {
   const formats = [...document.querySelectorAll('.formats input:checked')].map(el => el.value);
-  if (!formats.length)      { showError('형식을 하나 이상 선택하세요.'); return; }
-  if (!selectedMap.size)    { showError('DM을 선택하세요.'); return; }
+  if (!formats.length)   { showError('형식을 하나 이상 선택하세요.'); return; }
+  if (!selectedMap.size) { showError('DM을 선택하세요.'); return; }
 
-  abortController = new AbortController();
   clearError();
   show('progress');
   progressFill.className = 'progress-fill';
-  startElapsedTimer();
+  batchStatus.classList.add('hidden');
+  elapsedTimeEl.textContent = '00:00';
+  progressText.textContent = '준비 중...';
 
-  const items    = [...selectedMap.values()];
-  const isMulti  = items.length > 1;
-  let totalMsgs  = 0;
+  const items = [...selectedMap.values()].map(({ channel, user }) => ({
+    channelId: channel.id,
+    channelName: getChannelName(channel),
+    recipient: user,
+  }));
 
-  try {
-    const me = await apiFetch('/users/@me', {}, abortController.signal);
+  chrome.runtime.sendMessage({
+    type: 'START_EXPORT',
+    params: { items, formats, dateFrom: dateFrom.value, dateTo: dateTo.value },
+  });
+  startPolling();
+}
 
-    for (let i = 0; i < items.length; i++) {
-      if (abortController.signal.aborted) break;
+function cancelExport() {
+  chrome.runtime.sendMessage({ type: 'CANCEL_EXPORT' });
+  stopPolling();
+  show('dm');
+  batchStatus.classList.add('hidden');
+}
 
-      const { channel, user } = items[i];
-      const name = getChannelName(channel);
+// ── 폴링: 백그라운드 진행 상태 반영 ──────────────────────
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    const { exportStatus } = await chrome.storage.session.get('exportStatus');
+    if (exportStatus) applyStatus(exportStatus);
+  }, 500);
+}
 
-      if (isMulti) {
-        batchStatus.textContent = `${i + 1} / ${items.length} — ${name}`;
-        batchStatus.classList.remove('hidden');
-      }
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
 
-      setProgress('메시지 수집 중...');
-      const messages = await fetchAllMessages(
-        channel.id, dateFrom.value, dateTo.value, abortController.signal
-      );
-      if (abortController.signal.aborted) break;
-
-      setProgress(`${messages.length.toLocaleString()}개 완료. 파일 생성 중...`);
-      const safe = name.replace(/[/\\:*?"<>|]/g, '_');
-
-      if (formats.includes('json')) downloadJSON(messages, `dm_${safe}.json`);
-      if (formats.includes('csv'))  downloadCSV(messages,  `dm_${safe}.csv`);
-      if (formats.includes('txt'))  downloadTXT(messages,  `dm_${safe}.txt`);
-      if (formats.includes('html')) downloadHTML(messages, user, me, `dm_${safe}.html`);
-
-      totalMsgs += messages.length;
-    }
-
-    if (!abortController.signal.aborted) {
-      progressFill.className = 'progress-fill done';
-      const label = isMulti
-        ? `✓ ${items.length}개 DM, 총 ${totalMsgs.toLocaleString()}개 메시지 완료`
-        : `✓ ${totalMsgs.toLocaleString()}개 메시지를 내보냈습니다.`;
-      setProgress(label);
+function applyStatus(s) {
+  if (s.status === 'running') {
+    progressText.textContent = s.message ?? '진행 중...';
+    if ((s.batchTotal ?? 1) > 1) {
+      batchStatus.textContent = `${s.batchCurrent} / ${s.batchTotal} — ${s.channelName ?? ''}`;
+      batchStatus.classList.remove('hidden');
+    } else {
       batchStatus.classList.add('hidden');
-      stopElapsedTimer();
-
-      // 완료 알림
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('icons/icon48.png'),
-        title: 'Discord DM Exporter',
-        message: label.replace('✓ ', ''),
-      });
-
-      setTimeout(() => { show('export'); batchStatus.classList.add('hidden'); }, 4000);
     }
-  } catch (e) {
-    stopElapsedTimer();
-    if (e.name !== 'AbortError') showError(e.message);
+    if (s.startTime) {
+      const elapsed = Math.floor((Date.now() - s.startTime) / 1000);
+      const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const ss = String(elapsed % 60).padStart(2, '0');
+      elapsedTimeEl.textContent = `${mm}:${ss}`;
+    }
+  } else if (s.status === 'done') {
+    stopPolling();
+    progressFill.className = 'progress-fill done';
+    progressText.textContent = s.message ?? '완료';
+    batchStatus.classList.add('hidden');
+    setTimeout(() => { show('dm'); clearError(); }, 4000);
+  } else if (s.status === 'error') {
+    stopPolling();
     show('export');
+    showError(s.message ?? '오류가 발생했습니다.');
+    batchStatus.classList.add('hidden');
+  } else if (s.status === 'cancelled') {
+    stopPolling();
+    show('dm');
     batchStatus.classList.add('hidden');
   }
 }
 
-function cancelExport() {
-  abortController?.abort();
-  stopElapsedTimer();
-  show('export');
-  batchStatus.classList.add('hidden');
-}
-
-// ── 경과 시간 타이머 ──────────────────────────────────────
-function startElapsedTimer() {
-  exportStartTime = Date.now();
-  elapsedTimeEl.textContent = '00:00';
-  elapsedTimer = setInterval(() => {
-    const s = Math.floor((Date.now() - exportStartTime) / 1000);
-    const mm = String(Math.floor(s / 60)).padStart(2, '0');
-    const ss = String(s % 60).padStart(2, '0');
-    elapsedTimeEl.textContent = `${mm}:${ss}`;
-  }, 1000);
-}
-
-function stopElapsedTimer() {
-  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
-}
-
-function setProgress(msg) { progressText.textContent = msg; }
-function showError(msg)   { errorBox.textContent = msg; errorBox.classList.remove('hidden'); }
-function clearError()     { errorBox.classList.add('hidden'); }
+// ── 오류 표시 ────────────────────────────────────────────
+function showError(msg) { errorBox.textContent = msg; errorBox.classList.remove('hidden'); }
+function clearError()   { errorBox.classList.add('hidden'); }
 
 // ── 형식 저장 ─────────────────────────────────────────────
 function saveFormats() {
@@ -405,14 +383,13 @@ function saveFormats() {
   chrome.storage.local.set({ lastFormats: formats });
 }
 
-// ── Discord API ───────────────────────────────────────────
-async function apiFetch(path, params = {}, signal = null) {
+// ── Discord API (DM 목록 로딩용) ─────────────────────────
+async function apiFetch(path, params = {}) {
   const url = new URL(API + path);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   for (let i = 0; i < 5; i++) {
     const resp = await fetch(url.toString(), {
       headers: { Authorization: token, 'Content-Type': 'application/json' },
-      signal,
     });
     if (resp.status === 429) {
       const body = await resp.json().catch(() => ({}));
@@ -426,34 +403,6 @@ async function apiFetch(path, params = {}, signal = null) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function fetchAllMessages(channelId, fromDate, toDate, signal) {
-  const messages = [];
-  let before = null;
-  const fromTs = fromDate ? new Date(fromDate + 'T00:00:00+09:00').getTime() : null;
-  const toTs   = toDate   ? new Date(toDate   + 'T23:59:59+09:00').getTime() : null;
-
-  while (true) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const params = { limit: 100 };
-    if (before) params.before = before;
-    const batch = await apiFetch(`/channels/${channelId}/messages`, params, signal);
-    if (!batch.length) break;
-    let stop = false;
-    for (const m of batch) {
-      const ts = new Date(m.timestamp).getTime();
-      if (toTs   && ts > toTs)   continue;
-      if (fromTs && ts < fromTs) { stop = true; break; }
-      messages.push(m);
-    }
-    before = batch[batch.length - 1].id;
-    setProgress(`메시지 수집 중... ${messages.length.toLocaleString()}개`);
-    await sleep(380);
-    if (stop || batch.length < 100) break;
-  }
-  messages.sort((a, b) => a.id.localeCompare(b.id));
-  return messages;
-}
 
 // ── 유틸 ─────────────────────────────────────────────────
 function getChannelName(ch) {
@@ -492,207 +441,4 @@ function snowflakeToDateStr(id) {
     const ms = Number(BigInt(id) >> 22n) + Number(DISCORD_EPOCH);
     return new Date(ms).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' });
   } catch { return ''; }
-}
-
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function fmtTs(ts) {
-  return new Date(ts).toLocaleString('ko-KR', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-}
-
-function downloadBlob(content, filename, mime) {
-  const blob = new Blob([content], { type: mime });
-  const url  = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: false }, () => URL.revokeObjectURL(url));
-}
-
-// ── 내보내기 형식 ─────────────────────────────────────────
-function downloadJSON(messages, filename) {
-  downloadBlob(JSON.stringify(messages, null, 2), filename, 'application/json');
-}
-
-function downloadCSV(messages, filename) {
-  const header = 'timestamp,author,content,attachments\n';
-  const rows = messages.map(m =>
-    [fmtTs(m.timestamp), m.author.username, m.content ?? '',
-     (m.attachments ?? []).map(a => a.url).join(' | ')]
-      .map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')
-  );
-  downloadBlob('﻿' + header + rows.join('\n'), filename, 'text/csv;charset=utf-8');
-}
-
-function downloadTXT(messages, filename) {
-  const lines = messages.map(m => {
-    let line = `[${fmtTs(m.timestamp)}] ${m.author.username}: ${m.content ?? ''}`;
-    (m.attachments ?? []).forEach(a => { line += `\n  [첨부] ${a.url}`; });
-    return line;
-  });
-  downloadBlob(lines.join('\n'), filename, 'text/plain;charset=utf-8');
-}
-
-// ── HTML 내보내기 ─────────────────────────────────────────
-function downloadHTML(messages, recipient, me, filename) {
-  function escH(s) {
-    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/\n/g, '<br>');
-  }
-  function avUrl(author) {
-    return author.avatar
-      ? `https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.png?size=40`
-      : `https://cdn.discordapp.com/embed/avatars/${Number(author.id) % 5}.png`;
-  }
-
-  const rows = messages.map(m => {
-    const ts   = fmtTs(m.timestamp);
-    const date = ts.slice(0, 10);
-    const isMe = m.author.id === me.id;
-
-    const attachHtml = (m.attachments ?? []).map(a =>
-      (a.content_type ?? '').startsWith('image/')
-        ? `<img src="${a.url}" class="att-img" loading="lazy" referrerpolicy="no-referrer" alt="">`
-        : `<a href="${a.url}" class="att-link" target="_blank">${escH(a.filename)}</a>`
-    ).join('');
-
-    const embedHtml = (m.embeds ?? []).map(e => {
-      const color = `#${(e.color ?? 0x5865F2).toString(16).padStart(6, '0')}`;
-      return `<div class="embed" style="border-left-color:${color}">
-        ${e.title       ? `<div class="embed-title">${escH(e.title)}</div>` : ''}
-        ${e.description ? `<div class="embed-desc">${escH(e.description)}</div>` : ''}
-        ${e.image?.url  ? `<img src="${e.image.url}" class="att-img" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}
-      </div>`;
-    }).join('');
-
-    const reactHtml = (m.reactions ?? []).map(r =>
-      `<span class="reaction">${r.emoji.name ?? '?'} <b>${r.count}</b></span>`
-    ).join('');
-
-    const replyHtml = m.referenced_message ? `
-      <div class="reply">
-        <span class="reply-author">${escH(m.referenced_message.author?.username ?? '')}</span>
-        <span class="reply-text">${escH((m.referenced_message.content ?? '').slice(0, 100))}</span>
-      </div>` : '';
-
-    return `<div class="${isMe ? 'msg msg-me' : 'msg'}" data-date="${date}">
-      <img src="${avUrl(m.author)}" class="avatar" loading="lazy" referrerpolicy="no-referrer"
-           onerror="this.src='https://cdn.discordapp.com/embed/avatars/${Number(m.author.id) % 5}.png'" alt="">
-      <div class="body">
-        ${replyHtml}
-        <div class="hdr">
-          <span class="name">${escH(m.author.username)}</span>
-          <span class="ts">${ts}</span>
-        </div>
-        <div class="content">${escH(m.content)}</div>
-        ${attachHtml}${embedHtml}
-        ${reactHtml ? `<div class="reactions">${reactHtml}</div>` : ''}
-      </div>
-    </div>`;
-  }).join('');
-
-  const rname = escH(getChannelName({ type: 1, recipients: [recipient] }));
-  const total = messages.length;
-
-  const html = `<!DOCTYPE html>
-<html lang="ko" data-theme="dark">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DM — ${rname}</title>
-<style>
-:root{--bg:#313338;--bg2:#2b2d31;--bg3:#1e1f22;--text:#dcddde;--text2:#b5bac1;--muted:#80848e;--accent:#5865f2;--border:#3c3f44;--hover:#2e3035}
-[data-theme="light"]{--bg:#fff;--bg2:#f2f3f5;--bg3:#e3e5e8;--text:#2e3338;--text2:#4e5058;--muted:#80848e;--border:#d4d7dc;--hover:#f2f3f5}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',-apple-system,sans-serif;font-size:15px}
-.toolbar{background:var(--bg3);border-bottom:1px solid var(--border);padding:12px 20px;position:sticky;top:0;z-index:100;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.toolbar-info{flex:1;min-width:0}
-.toolbar-info h1{font-size:16px;font-weight:700;color:var(--text)}
-.toolbar-info small{font-size:12px;color:var(--muted)}
-.toolbar-controls{display:flex;align-items:center;gap:8px}
-.search-input{background:var(--bg2);border:1.5px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:13px;outline:none;width:180px;transition:border-color .15s}
-.search-input:focus{border-color:var(--accent)}
-.search-input::placeholder{color:var(--muted)}
-.search-count{font-size:12px;color:var(--muted);min-width:30px}
-.theme-btn{background:var(--bg2);border:1.5px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text2);cursor:pointer;font-size:14px;transition:background .15s}
-.theme-btn:hover{background:var(--bg3)}
-.chat{max-width:860px;margin:0 auto;padding:16px 20px}
-.divider{display:flex;align-items:center;gap:10px;margin:16px 0;position:sticky;top:56px;z-index:10;padding:0 2px}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
-.divider span{font-size:12px;font-weight:700;color:var(--muted);white-space:nowrap;background:var(--bg);padding:2px 8px;border-radius:10px;border:1px solid var(--border)}
-.msg{display:flex;gap:14px;padding:3px 6px;border-radius:6px;transition:background .1s}
-.msg:hover{background:var(--hover)}
-.msg.hidden{display:none!important}
-.msg.highlight .body{background:var(--accent)18;border-radius:4px;padding:2px 6px;margin:-2px -6px}
-.avatar{width:40px;height:40px;border-radius:50%;flex-shrink:0;margin-top:2px;background:var(--bg3);object-fit:cover}
-.body{flex:1;min-width:0}
-.hdr{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
-.name{font-weight:700;color:var(--text)}
-.ts{font-size:11px;color:var(--muted)}
-.content{color:var(--text);line-height:1.5;word-break:break-word;white-space:pre-wrap}
-.reply{display:flex;align-items:center;gap:6px;margin-bottom:4px;padding:4px 8px;background:var(--bg2);border-left:2px solid var(--muted);border-radius:4px;font-size:13px;color:var(--muted);overflow:hidden}
-.reply-author{font-weight:700;color:var(--accent);flex-shrink:0}
-.reply-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.att-img{max-width:420px;max-height:320px;border-radius:6px;margin-top:6px;display:block;object-fit:contain}
-.att-link{display:inline-flex;align-items:center;gap:6px;margin-top:6px;color:var(--accent);font-size:13px;text-decoration:none;padding:6px 10px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)}
-.att-link:hover{text-decoration:underline}
-.embed{border-left:4px solid var(--accent);background:var(--bg2);border-radius:4px;padding:10px 14px;margin-top:6px;max-width:520px;display:flex;flex-direction:column;gap:4px}
-.embed-title{font-weight:700;color:var(--text)}
-.embed-desc{color:var(--text2);font-size:14px;line-height:1.4}
-.reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
-.reaction{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:20px;font-size:13px;color:var(--text2)}
-.scroll-btns{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:6px;z-index:200}
-.scroll-btn{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;color:var(--text2);font-size:14px;box-shadow:0 2px 8px #00000040;transition:background .1s}
-.scroll-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-</style>
-</head>
-<body>
-<div class="toolbar">
-  <div class="toolbar-info">
-    <h1>@ ${rname}</h1>
-    <small>총 ${total.toLocaleString()}개 메시지</small>
-  </div>
-  <div class="toolbar-controls">
-    <input class="search-input" id="q" type="text" placeholder="검색..." oninput="doSearch(this.value)">
-    <span class="search-count" id="sc"></span>
-    <button class="theme-btn" onclick="toggleTheme()">🌙</button>
-  </div>
-</div>
-<div class="chat" id="chat">${rows}</div>
-<div class="scroll-btns">
-  <button class="scroll-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
-  <button class="scroll-btn" onclick="window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})">↓</button>
-</div>
-<script>
-(function(){
-  const msgs=[...document.querySelectorAll('.msg')];
-  let last='';
-  msgs.forEach(m=>{
-    const d=m.dataset.date;
-    if(d&&d!==last){const el=document.createElement('div');el.className='divider';el.innerHTML='<span>'+d+'</span>';m.before(el);last=d;}
-  });
-  window.doSearch=function(q){
-    const lq=q.toLowerCase().trim();let n=0;
-    msgs.forEach(m=>{
-      if(!lq){m.classList.remove('hidden','highlight');return;}
-      const ok=(m.querySelector('.content')?.textContent??'').toLowerCase().includes(lq)||(m.querySelector('.name')?.textContent??'').toLowerCase().includes(lq);
-      m.classList.toggle('hidden',!ok);m.classList.toggle('highlight',ok);if(ok)n++;
-    });
-    document.getElementById('sc').textContent=lq?n+'개':'';
-  };
-  window.toggleTheme=function(){
-    const h=document.documentElement,dark=h.dataset.theme!=='light';
-    h.dataset.theme=dark?'light':'dark';
-    document.querySelector('.theme-btn').textContent=dark?'☀️':'🌙';
-  };
-  window.scrollTo(0,document.body.scrollHeight);
-})();
-<\/script>
-</body>
-</html>`;
-
-  downloadBlob(html, filename, 'text/html;charset=utf-8');
 }
