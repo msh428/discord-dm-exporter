@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Discord DM Exporter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Discord DM 대화를 HTML, JSON, CSV, TXT로 내보내기",
   "permissions": ["storage", "downloads", "tabs", "scripting"],
   "host_permissions": [
